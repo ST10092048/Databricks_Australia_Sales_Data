@@ -1,59 +1,105 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # **Business Rules – Simulated Australia Sales and Opportunities Data**
+# MAGIC # Silver Layer – Cleansed & Conformed Data
+# MAGIC *Medallion Architecture – Australian Sales & Opportunities Pipeline*
 # MAGIC
-# MAGIC Context: These rules are applied in the Silver layer of a medallion architecture pipeline to ensure that ingested raw data from the Bronze layer is accurate, consistent, and analytics-ready.
+# MAGIC ---
 # MAGIC
-# MAGIC ## 1. Required Fields
+# MAGIC ## Goal of the Silver Layer
 # MAGIC
-# MAGIC CustomerID, OrderID, OpportunityID, and SalesAmount must be populated; null or missing values are flagged for review.
+# MAGIC The Silver layer transforms raw Bronze data (customers, orders, opportunities) into a **trusted, standardized, enterprise-ready foundation**.
 # MAGIC
-# MAGIC Ensures every record is traceable and can be linked to the corresponding customer, order, or opportunity.
+# MAGIC **Objectives:**
+# MAGIC - Ensure core entities are **accurate, consistent, and linkable** across tables.  
+# MAGIC - Apply **just-enough cleansing, validation, and standardization** to support analysts, BI tools, and ML pipelines.  
+# MAGIC - Preserve **full granularity** — no aggregations or heavy business logic (reserved for Gold).  
+# MAGIC - Surface **data quality issues transparently** using flags or quarantine, not silent drops.  
+# MAGIC - Facilitate **fast, repeatable reporting, self-service analytics, and feature engineering**.  
+# MAGIC - Simplify Gold-layer development by handling **common fixes once** (null keys, invalid states, casing, orphan records).
+# MAGIC ---
 # MAGIC
-# MAGIC ## 2. Data Type and Format Constraints
+# MAGIC ## Key Principles
 # MAGIC
-# MAGIC SalesAmount and Quantity must be numeric.
+# MAGIC - **Critical failures** on identity (`customerid`, `orderid`, `opportunityid`) and money (`amount`, `orderamt`) → quarantine immediately.  
+# MAGIC - **Warnings** for non-critical rules → allow data to flow while surfacing issues.  
+# MAGIC - **Auditability** → all Silver records include DQ metadata and traceability to Bronze.  
+# MAGIC - **Australian business context** → enforce state codes, realistic deal thresholds, and AU-specific business rules.  
+# MAGIC - **Iterative improvement** → start strict on essentials, expand as DQ insights are gained.  
 # MAGIC
-# MAGIC OrderDate and OpportunityDate must be valid date formats.
+# MAGIC ---
 # MAGIC
-# MAGIC Region and State must conform to valid Australian state codes (e.g., NSW, VIC, QLD).
+# MAGIC ## Core Business Rules & Quality Gates
 # MAGIC
-# MAGIC ## 3. Logical Consistency Rules
+# MAGIC ### 1. Identity & Traceability (Critical – FAIL if violated)
+# MAGIC - `customerid`, `orderid`, `opportunityid` **must exist and be unique** per load.  
+# MAGIC - Deduplicate on **most recent `ingestion_timestamp`**.  
+# MAGIC - Every `customerid` in Orders or Opportunities **must exist in Customers** → flag `is_orphan_customer = true` if unmatched, but retain record.  
 # MAGIC
-# MAGIC OpportunityCloseDate must be greater than or equal to OpportunityOpenDate.
+# MAGIC ---
 # MAGIC
-# MAGIC OrderDate must not precede OpportunityCloseDate.
+# MAGIC ### 2. Financial & Quantity Integrity (Critical – FAIL if violated)
+# MAGIC - `orderamt` and `amount` **must be numeric ≥ 0**.  
+# MAGIC - `quantity` **must be integer ≥ 1**.  
+# MAGIC - Flag deals > AUD 750,000 as `is_large_deal_suspicious` for business review.  
 # MAGIC
-# MAGIC SalesAmount must be greater than or equal to zero.
+# MAGIC ---
 # MAGIC
-# MAGIC ## 4. Uniqueness Constraints
+# MAGIC ### 3. Temporal Consistency (WARN)
+# MAGIC - Dates must be valid (avoid placeholder values like `1900-01-01` or `9999-12-31`).  
+# MAGIC - Orders should not be dated far in the future (> today + 90 days).  
+# MAGIC - Soft warning if `orderdate` precedes linked opportunity date significantly.  
 # MAGIC
-# MAGIC OrderID and OpportunityID must be unique to prevent duplicate transactions or opportunities.
+# MAGIC ---
 # MAGIC
-# MAGIC ## 5. Referential Integrity
+# MAGIC ### 4. Australian Domain Rules (WARN + Standardize)
+# MAGIC - `state` must match official AU codes (NSW, VIC, QLD, SA, WA, TAS, NT, ACT).  
+# MAGIC   - Input normalized to **UPPER CASE**.  
+# MAGIC   - Invalid values flagged `invalid_state = true` but retained.  
 # MAGIC
-# MAGIC Every CustomerID must correspond to an existing customer record.
+# MAGIC ---
 # MAGIC
-# MAGIC Every SalesRepID must exist in the sales representative master table.
+# MAGIC ### 5. Categorical & Formatting Cleanup (Standardize)
+# MAGIC - `salesrep`: trim whitespace, apply **title case**, reject empty or placeholder values (`"N/A"`, `"TBD"`).  
+# MAGIC - `phase` (opportunity): normalize stages  
+# MAGIC   - Examples: `"2-closed won"` → `"Closed Won"`, `"3-closed lost"` → `"Closed Lost"`  
+# MAGIC - `city`: trim whitespace (no heavy standardization yet due to variability).  
 # MAGIC
-# MAGIC ## 6. Categorical Validation
+# MAGIC ---
 # MAGIC
-# MAGIC Fields such as SalesStage, OpportunityStatus, and ProductCategory must only contain allowed values.
+# MAGIC ### 6. Data Quality Metadata (Added to Every Silver Table)
 # MAGIC
-# MAGIC Example: SalesStage ∈ {Prospect, Qualification, Proposal, Closed Won, Closed Lost}
+# MAGIC | Column | Type | Purpose |
+# MAGIC |--------|------|---------|
+# MAGIC | `dq_status` | VARCHAR | 'PASS' / 'WARN' / 'FAIL' |
+# MAGIC | `dq_issues` | ARRAY<STRING> | Example: ['negative_amount', 'invalid_state', 'missing_customerid'] |
+# MAGIC | `is_orphan_customer` | BOOLEAN | Customer missing from Customers table |
+# MAGIC | `is_large_deal_suspicious` | BOOLEAN | Deal exceeds threshold for review |
+# MAGIC | `invalid_state` | BOOLEAN | State not valid per AU codes |
+# MAGIC | `bronze_trace_id` or `source_hash` | VARCHAR | Full traceability back to raw Bronze data |
 # MAGIC
-# MAGIC ## 7. Threshold and Business Constraints
+# MAGIC ---
 # MAGIC
-# MAGIC DiscountPercentage must be between 0% and 100%.
 # MAGIC
-# MAGIC Quantity must be greater than or equal to 1.
 
 # COMMAND ----------
 
 # DBTITLE 1,Dependencies
 from pyspark.sql.functions import col, upper, trim,lower
 from pyspark.sql.functions import to_date,year, month,dayofweek
+from pyspark.sql.functions import regexp_replace, when, max as spark_max
 # from utils.logger import get_logger
+
+# COMMAND ----------
+
+# DBTITLE 1,Ingestion Methods
+def read_bronze_data(table_name):
+    df = spark.table(f"salesdata.australia_sales_and_opportunities.{table_name}")
+    return df
+
+def latest_ingestion_ts(df):
+    latest_ingestion_ts = df.agg(spark_max(col("ingestion_timestamp"))).collect()[0][0]
+    df = df.filter(col("ingestion_timestamp") == latest_ingestion_ts)
+    return df
 
 # COMMAND ----------
 
@@ -63,16 +109,37 @@ from pyspark.sql.functions import to_date,year, month,dayofweek
 
 # COMMAND ----------
 
+# DBTITLE 1,Standardization Methods
+
+def standardize_data_strings(df, columns:[]):
+    for c in columns:
+        df = df.withColumn(c, lower(trim(col(c))))
+    return df
+
+def standardize_data_numeric(df,columns:[]):
+    for c in columns:
+        df = df.withColumn(c, col(c).cast("double"))
+        df = df.withColumn(c, when(col(c).isNull(), 0).otherwise(col(c)))
+    return df
+
+def lower_column_names(df):
+    df = df.toDF(*[c.lower() for c in df.columns])
+    return df
+    
+    
+
+# COMMAND ----------
+
 # DBTITLE 1,Customer Standardization
 
 # logger = get_logger("silver_pipeline")
-customer_df = spark.table("databricks_simulated_australia_sales_and_opportunities_data.v01.customers")
-customer_df = customer_df.toDF(*[c.lower() for c in customer_df.columns])
-display(customer_df.columns)
-
 string_columns = ['customerid', 'customername','city','state']
-for c in string_columns:
-    customer_df = customer_df.withColumn(c, lower(trim(col(c))))
+
+customer_df = read_bronze_data("bronze_customers")
+customer_df = latest_ingestion_ts(customer_df)
+
+customer_df = lower_column_names(customer_df)
+customer_df = standardize_data_strings(customer_df, string_columns)
 
 display(customer_df)
 # logger.info("Customer Table standardization completed")
@@ -80,29 +147,33 @@ display(customer_df)
 # COMMAND ----------
 
 # DBTITLE 1,orders Standardization
-orders_df = spark.table("databricks_simulated_australia_sales_and_opportunities_data.v01.orders")
-
-orders_df = orders_df.toDF(*[c.lower() for c in orders_df.columns])
-display(orders_df.columns)
 
 string_columns = ['customerid', 'productid','salesrep']
-for c in string_columns:
-    orders_df = orders_df.withColumn(c, lower(trim(col(c))))
+numeric_columns = ["quantity", "orderid", "orderamt"]
+
+orders_df = read_bronze_data("bronze_orders")
+orders_df = latest_ingestion_ts(orders_df)
+orders_df = lower_column_names(orders_df)
+
+orders_df = standardize_data_strings(orders_df,string_columns)
+orders_df = standardize_data_numeric(orders_df,numeric_columns)
 
 display(orders_df)
-# logger.info("Orders Table standardization completed")
+
 
 # COMMAND ----------
 
 # DBTITLE 1,Opportunities Standardization
-opportunities_df = spark.table("databricks_simulated_australia_sales_and_opportunities_data.v01.opportunities")
-
-opportunities_df = opportunities_df.toDF(*[c.lower() for c in opportunities_df.columns])
-display(opportunities_df.columns)
-
 string_columns = ['opportunityid', 'customerid','state','salesrep','phase']
-for c in string_columns:
-    opportunities_df = opportunities_df.withColumn(c, lower(trim(col(c))))
+numeric_columns = ["amount"]
+
+opportunities_df = read_bronze_data("bronze_opportunities")
+display(opportunities_df.columns)
+opportunities_df = latest_ingestion_ts(opportunities_df)
+opportunities_df = lower_column_names(opportunities_df)
+
+opportunities_df = standardize_data_strings(opportunities_df,string_columns)
+opportunities_df = standardize_data_numeric(opportunities_df,numeric_columns)
 
 display(opportunities_df)
 # logger.info("Opportunities Table standardization completed")
@@ -115,13 +186,23 @@ display(opportunities_df)
 
 # COMMAND ----------
 
+# DBTITLE 1,Data Validation Methods
+def check_nulls(df, columns):
+    df.filter(sum(col(c).isNull().cast("int") for c in columns) > 0 )
+    return df
+
+def check_duplicates(df, columns:[]):
+    df.groupBy(columns).count().filter(col("count") > 1)
+
+    return df
+
+
+# COMMAND ----------
+
 # DBTITLE 1,Customer Null Check
 
 id_columns = ["customerid","customername"]
-customer_df_null_check = customer_df.filter(
-    sum(col(c).isNull().cast("int") for c in id_columns) > 0
-)
-
+customer_df_null_check = check_nulls(customer_df, id_columns)
 display(customer_df_null_check)
 
 # COMMAND ----------
@@ -129,10 +210,8 @@ display(customer_df_null_check)
 # DBTITLE 1,Orders Null Check
 
 
-id_columns = ["orderid","customerid","productid","orderdate"]
-orders_df_null_check = orders_df.filter(
-    sum(col(c).isNull().cast("int") for c in id_columns) > 0
-)
+id_columns = ["orderid","customerid","productid","orderdate","orderamt","quantity"]
+orders_df_null_check = check_nulls(orders_df, id_columns)
 
 display(orders_df_null_check)
 
@@ -140,20 +219,14 @@ display(orders_df_null_check)
 
 # DBTITLE 1,Opportunities Null Check
 id_columns = ["opportunityid","customerid","salesrep"]
-opportunities_df_null_check = opportunities_df.filter(
-    sum(col(c).isNull().cast("int") for c in id_columns) > 0
-)
+opportunities_df_null_check = check_nulls(opportunities_df, id_columns) 
 display(opportunities_df_null_check)
 
 # COMMAND ----------
 
 # DBTITLE 1,Customer Duplicates
-customer_df_duplicates = (
-    customer_df.groupBy("customerid")
-      .count()
-      .filter(col("count") > 1)
-)
-
+dup_cols = ["customerid"]
+customer_df_duplicates = check_duplicates(customer_df, dup_cols)
 display(customer_df_duplicates)
 
 

@@ -33,19 +33,22 @@ from pyspark.sql.functions import current_timestamp
 
 # COMMAND ----------
 
-
 customer_df = spark.table("databricks_simulated_australia_sales_and_opportunities_data.v01.customers")
 customer_df = customer_df.withColumn("ingestion_timestamp", current_timestamp())
-customer_df.write.format("delta").mode("append").saveAsTable("ausalesdata.bronse.customer_information")
+if customer_df.count() > 0:
+    customer_df.write.format("delta").mode("append")\
+        .saveAsTable("salesdata.australia_sales_and_opportunities.bronze_customers")
 
 # COMMAND ----------
 
 orders_df = spark.table("databricks_simulated_australia_sales_and_opportunities_data.v01.orders")
 orders_df = orders_df.withColumn("ingestion_timestamp", current_timestamp())
-orders_df.write.format("delta").mode("append").saveAsTable("ausalesdata.bronse.orders")
+orders_df.write.format("delta").mode("append")\
+    .saveAsTable("salesdata.australia_sales_and_opportunities.bronze_orders")
 
 # COMMAND ----------
 
 opportunities_df = spark.table("databricks_simulated_australia_sales_and_opportunities_data.v01.opportunities")
 opportunities_df = opportunities_df.withColumn("ingestion_timestamp", current_timestamp())
-opportunities_df.write.format("delta").mode("append").saveAsTable("ausalesdata.bronse.opportunities")
+opportunities_df.write.format("delta").mode("append")\
+    .saveAsTable("salesdata.australia_sales_and_opportunities.bronze_opportunities")
