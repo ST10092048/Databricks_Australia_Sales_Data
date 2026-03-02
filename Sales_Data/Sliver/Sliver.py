@@ -83,6 +83,12 @@
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## **Dependencies**
+# MAGIC I run the dependencies step separately and first for pipeline debugging. This ensures that if a dependency fails, I can detect it early without affecting the rest of the pipeline. Sometimes the pipeline logic itself is correct, but a dependency may fail due to external issues. Running dependencies independently prevents other tables from being processed or written when one table has a problem, helping to avoid partial or inconsistent data transactions.
+
+# COMMAND ----------
+
 # DBTITLE 1,Dependencies
 from pyspark.sql.functions import col, upper, trim,lower
 from pyspark.sql.functions import to_date,year, month,dayofweek
@@ -140,6 +146,7 @@ customer_df = latest_ingestion_ts(customer_df)
 
 customer_df = lower_column_names(customer_df)
 customer_df = standardize_data_strings(customer_df, string_columns)
+customer_df = customer_df.withColumn("state",upper(trim(col("state"))))
 
 display(customer_df)
 # logger.info("Customer Table standardization completed")
@@ -188,43 +195,62 @@ display(opportunities_df)
 
 # DBTITLE 1,Data Validation Methods
 def check_nulls(df, columns):
-    df.filter(sum(col(c).isNull().cast("int") for c in columns) > 0 )
+    nulls =df.filter(sum(col(c).isNull().cast("int") for c in columns) > 0 )
+
+    if nulls.count() > 0:
+        print(f"❌ Nulls found")
+        nulls.show()
+        raise Exception("Nulls found")
+    else:
+        print(f"✅ No nulls found")
+
     return df
+
+def check_values(df, columns):
+    for column in columns:
+        print(f"Checking column: {column}")
+        
+        invalid_rows = df.filter(col(column) < 1)
+        
+        if invalid_rows.count() > 0:
+            print(f"❌ Column {column} has values < 1")
+            invalid_rows.show()
+            raise Exception("Invalid values found")
+        else:
+            print(f"✅ Column {column} is valid")
+
+    return invalid_rows
 
 def check_duplicates(df, columns:[]):
-    df.groupBy(columns).count().filter(col("count") > 1)
+    dups = df.groupBy(columns).count().filter(col("count") > 1)
+    if dups.count() > 0:
+        print(f"❌ Duplicates found")
+        dups.show()
+        raise Exception("Duplicates found")
+    else:
+        print(f"✅ No duplicates found")
 
     return df
+
+def check_orphan_rows(df_main,df_check,key):
+    orphan_rows = df_main.join(df_check,on=key,how="left_anti")
+    if orphan_rows.count() > 0:
+        print(f"❌ Orphan rows found")
+        orphan_rows.show()
+        raise Exception("Orphan rows found")
+    else:
+        print(f"✅ No orphan rows found")
+    return orphan_rows
 
 
 # COMMAND ----------
 
-# DBTITLE 1,Customer Null Check
+# DBTITLE 1,Customer Validation
 
 id_columns = ["customerid","customername"]
 customer_df_null_check = check_nulls(customer_df, id_columns)
 display(customer_df_null_check)
 
-# COMMAND ----------
-
-# DBTITLE 1,Orders Null Check
-
-
-id_columns = ["orderid","customerid","productid","orderdate","orderamt","quantity"]
-orders_df_null_check = check_nulls(orders_df, id_columns)
-
-display(orders_df_null_check)
-
-# COMMAND ----------
-
-# DBTITLE 1,Opportunities Null Check
-id_columns = ["opportunityid","customerid","salesrep"]
-opportunities_df_null_check = check_nulls(opportunities_df, id_columns) 
-display(opportunities_df_null_check)
-
-# COMMAND ----------
-
-# DBTITLE 1,Customer Duplicates
 dup_cols = ["customerid"]
 customer_df_duplicates = check_duplicates(customer_df, dup_cols)
 display(customer_df_duplicates)
@@ -232,36 +258,58 @@ display(customer_df_duplicates)
 
 # COMMAND ----------
 
-# DBTITLE 1,opportunities Duplicates
-opportunities_df_duplicates =(
-    opportunities_df.groupBy("opportunityid")
-      .count()
-      .filter(col("count") > 1  
-      )
-)
-display(opportunities_df_duplicates)
+# DBTITLE 1,Orders Validation
+
+
+id_columns = ["orderid","customerid","productid","orderdate","orderamt","quantity"]
+value_checks = ["quantity","orderamt"]
+orders_df_null_check = check_nulls(orders_df, id_columns)
+
+display(orders_df_null_check)
+dup_cols = ["orderid"]
+orders_df_duplicates = check_duplicates(orders_df, dup_cols)
+display(orders_df_duplicates)
+invalid_rows = check_values(orders_df, value_checks)
+display(invalid_rows)
+id_columns = ["customerid","salesrep"]
+orphan_rows = check_orphan_rows(customer_df,orders_df,'customerid')
 
 # COMMAND ----------
 
-# DBTITLE 1,Orders Duplicates
-orders_df_duplicates = (
-    orders_df.groupBy("orderid")
-      .count()
-      .filter(col("count") > 1)
-)
+# DBTITLE 1,Opportunities Validation
+id_columns = ["opportunityid","customerid","salesrep"]
+opportunities_df_null_check = check_nulls(opportunities_df, id_columns) 
+display(opportunities_df_null_check)
 
-display(orders_df_duplicates)
+dup_cols = ["opportunityid"]
+opportunities_df_duplicates = check_duplicates(opportunities_df, dup_cols)
+display(opportunities_df_duplicates)
+invalid_rows = check_values(opportunities_df, ["amount"])
+orphan_rows = check_orphan_rows(opportunities_df,orders_df,'customerid')
 
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Data 
+# MAGIC Data Enrichment
 
 # COMMAND ----------
 
-orders_df = orders_df.withColumn("orderdate", to_date(col("orderdate"),'yyyy-MM-dd'))
-orders_df = orders_df.withColumn("year",year("orderdate"))\
-    .withColumn("month",month("orderdate"))\
-    .withColumn("dayofweek",dayofweek("orderdate"))
-orders_df.show()
+# DBTITLE 1,Enrichment Methods
+def enrich_date(df,column):
+    df = df.withColumn(column, to_date(col(column), 'yyyy-MM-dd'))
+    df = df.withColumn("year",year(column))\
+        .withColumn("month",month(column))\
+        .withColumn("dayofweek",dayofweek(column))
+    return df
+
+# COMMAND ----------
+
+# DBTITLE 1,Order enrichment
+orders_df = enrich_date(orders_df,"orderdate")
+
+# COMMAND ----------
+
+# DBTITLE 1,opportunities enrichment
+opportunities_df = enrich_date(opportunities_df,"date")
+display(opportunities_df)
