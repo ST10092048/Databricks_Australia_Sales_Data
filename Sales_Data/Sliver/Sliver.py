@@ -92,7 +92,9 @@
 # DBTITLE 1,Dependencies
 from pyspark.sql.functions import col, upper, trim,lower
 from pyspark.sql.functions import to_date,year, month,dayofweek
-from pyspark.sql.functions import regexp_replace, when, max as spark_max
+from pyspark.sql.functions import regexp_replace, when, max as spark_max,row_number, desc
+from pyspark.sql.window import Window
+
 # from utils.logger import get_logger
 
 # COMMAND ----------
@@ -106,6 +108,20 @@ def latest_ingestion_ts(df):
     latest_ingestion_ts = df.agg(spark_max(col("ingestion_timestamp"))).collect()[0][0]
     df = df.filter(col("ingestion_timestamp") == latest_ingestion_ts)
     return df
+
+def deduplication(df, column, debug=False):
+    window_spec = Window.partitionBy(column).orderBy(desc("ingestion_timestamp"))
+
+    # Add row_number
+    df_with_rn = df.withColumn("rn", row_number().over(window_spec))
+
+    if debug:
+        print(f"=== Ranking before deduplication by '{column}' ===")
+        df_with_rn.orderBy(column, "rn").show(truncate=False)
+
+    # Keep only the first row per key
+    df_dedup = df_with_rn.filter(col("rn") == 1).drop("rn")
+    return df_dedup
 
 # COMMAND ----------
 
@@ -143,6 +159,7 @@ string_columns = ['customerid', 'customername','city','state']
 
 customer_df = read_bronze_data("bronze_customers")
 customer_df = latest_ingestion_ts(customer_df)
+customer_df = deduplication(customer_df, "customerid")
 
 customer_df = lower_column_names(customer_df)
 customer_df = standardize_data_strings(customer_df, string_columns)
@@ -160,6 +177,7 @@ numeric_columns = ["quantity", "orderid", "orderamt"]
 
 orders_df = read_bronze_data("bronze_orders")
 orders_df = latest_ingestion_ts(orders_df)
+orders_df = deduplication(orders_df, "orderid")
 orders_df = lower_column_names(orders_df)
 
 orders_df = standardize_data_strings(orders_df,string_columns)
@@ -177,10 +195,17 @@ numeric_columns = ["amount"]
 opportunities_df = read_bronze_data("bronze_opportunities")
 display(opportunities_df.columns)
 opportunities_df = latest_ingestion_ts(opportunities_df)
+opportunities_df = deduplication(opportunities_df,"opportunityid")
 opportunities_df = lower_column_names(opportunities_df)
 
 opportunities_df = standardize_data_strings(opportunities_df,string_columns)
 opportunities_df = standardize_data_numeric(opportunities_df,numeric_columns)
+opportunities_df = opportunities_df.withColumn("status_clean",upper(
+        trim(
+            regexp_replace("phase", r"^\d+-\s*", "")
+        )
+    )
+)
 
 display(opportunities_df)
 # logger.info("Opportunities Table standardization completed")
@@ -205,7 +230,21 @@ def check_nulls(df, columns):
         print(f"✅ No nulls found")
 
     return df
+def bad_sales_rep(df):
+    bad_salesrep = df.filter(
+        col("salesrep").isNull() |
+        (trim(col("salesrep")) == "") |
+        (trim(col("salesrep")).isin("N/A", "TBD"))
+)
 
+    if bad_salesrep.count() > 0:
+        raise Exception("❌ Invalid salesrep values found")
+    else:
+        print(f"✅ No invalid salesrep values found")
+
+def big_orders(df,column,amount):
+    big_orders = df.withColumn("is_large_deal_suspicious", when(col(column) > amount, True).otherwise(False))
+    return big_orders
 def check_values(df, columns):
     for column in columns:
         print(f"Checking column: {column}")
@@ -261,7 +300,7 @@ display(customer_df_duplicates)
 # DBTITLE 1,Orders Validation
 
 
-id_columns = ["orderid","customerid","productid","orderdate","orderamt","quantity"]
+id_columns = ["orderid","customerid","productid","orderdate","orderamt","quantity","salesrep"]
 value_checks = ["quantity","orderamt"]
 orders_df_null_check = check_nulls(orders_df, id_columns)
 
@@ -273,6 +312,10 @@ invalid_rows = check_values(orders_df, value_checks)
 display(invalid_rows)
 id_columns = ["customerid","salesrep"]
 orphan_rows = check_orphan_rows(customer_df,orders_df,'customerid')
+big_orders = big_orders(orders_df,'orderamt',750000)
+bad_sales_rep(orders_df)
+display(big_orders)
+
 
 # COMMAND ----------
 
@@ -286,6 +329,7 @@ opportunities_df_duplicates = check_duplicates(opportunities_df, dup_cols)
 display(opportunities_df_duplicates)
 invalid_rows = check_values(opportunities_df, ["amount"])
 orphan_rows = check_orphan_rows(opportunities_df,orders_df,'customerid')
+bad_sales_rep(opportunities_df)
 
 
 # COMMAND ----------
