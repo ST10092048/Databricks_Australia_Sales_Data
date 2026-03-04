@@ -92,7 +92,7 @@
 # DBTITLE 1,Dependencies
 from pyspark.sql.functions import col, upper, trim,lower
 from pyspark.sql.functions import to_date,year, month,dayofweek
-from pyspark.sql.functions import regexp_replace, when, max as spark_max,row_number, desc
+from pyspark.sql.functions import regexp_replace, when, max as spark_max,row_number, desc,array_remove,array,size,lit
 from pyspark.sql.window import Window
 
 # from utils.logger import get_logger
@@ -219,67 +219,62 @@ display(opportunities_df)
 # COMMAND ----------
 
 # DBTITLE 1,Data Validation Methods
-def check_nulls(df, columns):
-    nulls =df.filter(sum(col(c).isNull().cast("int") for c in columns) > 0 )
-
-    if nulls.count() > 0:
-        print(f"❌ Nulls found")
-        nulls.show()
-        raise Exception("Nulls found")
-    else:
-        print(f"✅ No nulls found")
-
+def flag_nulls(df, columns):
+    for c in columns:
+        df = df.withColumn(
+            f"{c}_is_null",
+            col(c).isNull()
+        )
     return df
-def bad_sales_rep(df):
-    bad_salesrep = df.filter(
+
+def flag_bad_salesrep(df):
+    return df.withColumn(
+        "invalid_salesrep",
         col("salesrep").isNull() |
         (trim(col("salesrep")) == "") |
         (trim(col("salesrep")).isin("N/A", "TBD"))
-)
+    )
 
-    if bad_salesrep.count() > 0:
-        raise Exception("❌ Invalid salesrep values found")
-    else:
-        print(f"✅ No invalid salesrep values found")
+def flag_large_deals(df, column, amount):
+    return df.withColumn(
+        "is_large_deal_suspicious",
+        col(column) > amount
+    )
 
-def big_orders(df,column,amount):
-    big_orders = df.withColumn("is_large_deal_suspicious", when(col(column) > amount, True).otherwise(False))
-    return big_orders
-def check_values(df, columns):
-    for column in columns:
-        print(f"Checking column: {column}")
-        
-        invalid_rows = df.filter(col(column) < 1)
-        
-        if invalid_rows.count() > 0:
-            print(f"❌ Column {column} has values < 1")
-            invalid_rows.show()
-            raise Exception("Invalid values found")
-        else:
-            print(f"✅ Column {column} is valid")
+def flag_min_threshold(df, column, min_value):
+    return df.withColumn(
+        f"{column}_invalid",
+        col(column) < min_value
+    )
 
-    return invalid_rows
-
-def check_duplicates(df, columns:[]):
-    dups = df.groupBy(columns).count().filter(col("count") > 1)
-    if dups.count() > 0:
-        print(f"❌ Duplicates found")
-        dups.show()
-        raise Exception("Duplicates found")
-    else:
-        print(f"✅ No duplicates found")
-
-    return df
-
-def check_orphan_rows(df_main,df_check,key):
-    orphan_rows = df_main.join(df_check,on=key,how="left_anti")
-    if orphan_rows.count() > 0:
-        print(f"❌ Orphan rows found")
-        orphan_rows.show()
-        raise Exception("Orphan rows found")
-    else:
-        print(f"✅ No orphan rows found")
-    return orphan_rows
+def flag_duplicates(df, key_columns):
+    
+    window_spec = Window.partitionBy(*key_columns).orderBy(col("ingestion_timestamp").desc())
+    
+    df = df.withColumn(
+        "duplicate_rank",
+        row_number().over(window_spec)
+    )
+    
+    df = df.withColumn(
+        "is_duplicate",
+        col("duplicate_rank") > 1
+    )
+    
+    return df.drop("duplicate_rank")
+def flag_orphan_rows(df_main, df_reference, key):
+    ref_keys = df_reference.select(key).distinct()
+    
+    df = df_main.join(
+        ref_keys.withColumn("exists_flag", lit(True)),
+        on=key,
+        how="left"
+    )
+    
+    return df.withColumn(
+        "is_orphan",
+        col("exists_flag").isNull()
+    ).drop("exists_flag")
 
 
 # COMMAND ----------
@@ -287,12 +282,13 @@ def check_orphan_rows(df_main,df_check,key):
 # DBTITLE 1,Customer Validation
 
 id_columns = ["customerid","customername"]
-customer_df_null_check = check_nulls(customer_df, id_columns)
-display(customer_df_null_check)
-
 dup_cols = ["customerid"]
-customer_df_duplicates = check_duplicates(customer_df, dup_cols)
-display(customer_df_duplicates)
+customer_df = (
+    customer_df
+    .transform(flag_nulls,id_columns)
+    .transform(flag_duplicates,dup_cols)
+)
+display(customer_df)
 
 
 # COMMAND ----------
@@ -300,36 +296,39 @@ display(customer_df_duplicates)
 # DBTITLE 1,Orders Validation
 
 
-id_columns = ["orderid","customerid","productid","orderdate","orderamt","quantity","salesrep"]
-value_checks = ["quantity","orderamt"]
-orders_df_null_check = check_nulls(orders_df, id_columns)
-
-display(orders_df_null_check)
+null_columns = ["orderid","customerid","productid","orderdate","orderamt","quantity","salesrep"]
 dup_cols = ["orderid"]
-orders_df_duplicates = check_duplicates(orders_df, dup_cols)
-display(orders_df_duplicates)
-invalid_rows = check_values(orders_df, value_checks)
-display(invalid_rows)
 id_columns = ["customerid","salesrep"]
-orphan_rows = check_orphan_rows(customer_df,orders_df,'customerid')
-big_orders = big_orders(orders_df,'orderamt',750000)
-bad_sales_rep(orders_df)
-display(big_orders)
+orders_df = (
+    orders_df
+    .transform(flag_nulls,null_columns)
+    .transform(flag_duplicates,dup_cols)
+    .transform(flag_min_threshold,"quantity",0)
+    .transform(flag_min_threshold,"orderamt",0)
+    .transform(lambda customer_df: flag_orphan_rows(customer_df, orders_df, 'customerid'))
+    .transform(flag_large_deals,'orderamt',750000)
+    .transform(flag_bad_salesrep)
+)
+display(orders_df)
+
 
 
 # COMMAND ----------
 
 # DBTITLE 1,Opportunities Validation
 id_columns = ["opportunityid","customerid","salesrep"]
-opportunities_df_null_check = check_nulls(opportunities_df, id_columns) 
-display(opportunities_df_null_check)
-
 dup_cols = ["opportunityid"]
-opportunities_df_duplicates = check_duplicates(opportunities_df, dup_cols)
-display(opportunities_df_duplicates)
-invalid_rows = check_values(opportunities_df, ["amount"])
-orphan_rows = check_orphan_rows(opportunities_df,orders_df,'customerid')
-bad_sales_rep(opportunities_df)
+
+opportunities_df = (
+    opportunities_df
+    .transform(flag_nulls,id_columns)
+    .transform(flag_duplicates,dup_cols)
+    .transform(flag_min_threshold,"amount",0)
+    .transform(lambda orders_df: flag_orphan_rows(orders_df, opportunities_df, 'customerid'))
+    .transform(flag_bad_salesrep)
+)
+
+display(opportunities_df)
 
 
 # COMMAND ----------
