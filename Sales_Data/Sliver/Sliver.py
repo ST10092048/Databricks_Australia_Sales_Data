@@ -141,7 +141,6 @@ def standardize_data_strings(df, columns:[]):
 def standardize_data_numeric(df,columns:[]):
     for c in columns:
         df = df.withColumn(c, col(c).cast("double"))
-        df = df.withColumn(c, when(col(c).isNull(), 0).otherwise(col(c)))
     return df
 
 def lower_column_names(df):
@@ -276,6 +275,14 @@ def flag_orphan_rows(df_main, df_reference, key):
         col("exists_flag").isNull()
     ).drop("exists_flag")
 
+def flag_states(df):
+    valid_states = ["NSW","VIC","QLD","SA","WA","TAS","NT","ACT"]
+    df = df.withColumn(
+        "invalid_state",
+        ~col("state").isin(valid_states)
+    )
+    return df
+
 
 # COMMAND ----------
 
@@ -287,6 +294,7 @@ customer_df = (
     customer_df
     .transform(flag_nulls,id_columns)
     .transform(flag_duplicates,dup_cols)
+    .transform(flag_states)
 )
 display(customer_df)
 
@@ -303,9 +311,9 @@ orders_df = (
     orders_df
     .transform(flag_nulls,null_columns)
     .transform(flag_duplicates,dup_cols)
-    .transform(flag_min_threshold,"quantity",0)
+    .transform(flag_min_threshold,"quantity",1)
     .transform(flag_min_threshold,"orderamt",0)
-    .transform(lambda customer_df: flag_orphan_rows(customer_df, orders_df, 'customerid'))
+    .transform(lambda df: flag_orphan_rows(df, customer_df, 'customerid'))
     .transform(flag_large_deals,'orderamt',750000)
     .transform(flag_bad_salesrep)
 )
@@ -324,8 +332,9 @@ opportunities_df = (
     .transform(flag_nulls,id_columns)
     .transform(flag_duplicates,dup_cols)
     .transform(flag_min_threshold,"amount",0)
-    .transform(lambda orders_df: flag_orphan_rows(orders_df, opportunities_df, 'customerid'))
+    .transform(lambda df: flag_orphan_rows(df, orders_df, 'customerid'))
     .transform(flag_bad_salesrep)
+    .transform(flag_large_deals,'amount',750000)
 )
 
 display(opportunities_df)
@@ -341,7 +350,7 @@ display(opportunities_df)
 # DBTITLE 1,Enrichment Methods
 def enrich_date(df,column):
     df = df.withColumn(column, to_date(col(column), 'yyyy-MM-dd'))
-    df = df.withColumn("year",year(column))\
+    df = df.withColumn("year", year(col(column)))\
         .withColumn("month",month(column))\
         .withColumn("dayofweek",dayofweek(column))
     return df
@@ -350,9 +359,44 @@ def enrich_date(df,column):
 
 # DBTITLE 1,Order enrichment
 orders_df = enrich_date(orders_df,"orderdate")
+display(orders_df)
 
 # COMMAND ----------
 
 # DBTITLE 1,opportunities enrichment
 opportunities_df = enrich_date(opportunities_df,"date")
 display(opportunities_df)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## **Persisting Silver Layer Tables**
+# MAGIC
+# MAGIC **After completing all cleansing and validation steps, the transformed DataFrame is persisted to the Silver layer as a Delta table.**
+# MAGIC
+# MAGIC At this stage the data has already been:
+# MAGIC - `Deduplicated`
+# MAGIC - `Standardized`
+# MAGIC - `Cleaned`
+# MAGIC
+# MAGIC Validated against business rules
+# MAGIC
+# MAGIC The dataset is now considered conformed and analytics-ready, making it suitable for downstream transformations in the Gold layer.
+
+# COMMAND ----------
+
+# DBTITLE 1,Load To Gold
+# Customer Load
+customer_df.write.format("delta").mode("overwrite").saveAsTable("salesdata.australia_sales_and_opportunities.silver_customers")
+# Orders Load
+orders_df.write.format("delta").mode("overwrite").saveAsTable("salesdata.australia_sales_and_opportunities.silver_orders")
+# Opportunities Load
+opportunities_df.write.format("delta").mode("overwrite").saveAsTable("salesdata.australia_sales_and_opportunities.silver_opportunities")
+
+# COMMAND ----------
+
+# DBTITLE 1,Loaded Successfully
+for table in ["silver_customers","silver_orders","silver_opportunities"]:
+    df = spark.table(f"salesdata.australia_sales_and_opportunities.{table}")
+    print(f"{table} rows:", df.count())
+    
