@@ -452,3 +452,20 @@ opportunities_fact_key = join_key_fact_table(silver_opportunities_df,dim_sales_r
 opportunities_fact = fact_table(opportunities_fact_key,vaild_opportunityid_is_null,select_opportunity_columns)
 display(opportunities_fact)
 
+
+# COMMAND ----------
+
+
+def create_table_gold(df,format,mode,table_name):
+    df.write.format(format).mode(mode).option("mergeSchema", "true")\
+    .saveAsTable(f"salesdata.australia_sales_and_opportunities.{table_name}")
+
+# COMMAND ----------
+
+create_table_gold(dim_customer,"delta","overwrite","dim_customer")
+create_table_gold(dim_sales_rep,"delta","overwrite","dim_sales_rep")
+create_table_gold(dim_product,"delta","overwrite","dim_product")
+create_table_gold(date_key,"delta","overwrite","dim_date")
+create_table_gold(phase_dim,"delta","overwrite","dim_phase")
+create_table_gold(orders_fact,"delta","overwrite","orders_fact")
+create_table_gold(opportunities_fact,"delta","overwrite","opportunities_fact")

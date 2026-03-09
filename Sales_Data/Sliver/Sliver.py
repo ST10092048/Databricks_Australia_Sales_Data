@@ -105,7 +105,7 @@ from pyspark.sql.window import Window
 
 # DBTITLE 1,Ingestion Methods
 def read_bronze_data(table_name):
-    df = spark.table(f"salesdata.australia_sales_and_opportunities.{table_name}")
+    df = spark.table(f"salesdata.bronze.{table_name}")
     return df
 
 def latest_ingestion_ts(df):
@@ -160,7 +160,7 @@ def lower_column_names(df):
 # logger = get_logger("silver_pipeline")
 string_columns = ['customerid', 'customername','city','state']
 
-customer_df = read_bronze_data("bronze_customers")
+customer_df = read_bronze_data("customers")
 customer_df = latest_ingestion_ts(customer_df)
 customer_df = deduplication(customer_df, "customerid")
 
@@ -178,7 +178,7 @@ display(customer_df)
 string_columns = ['customerid', 'productid','salesrep']
 numeric_columns = ["quantity", "orderid", "orderamt"]
 
-orders_df = read_bronze_data("bronze_orders")
+orders_df = read_bronze_data("orders")
 orders_df = latest_ingestion_ts(orders_df)
 orders_df = deduplication(orders_df, "orderid")
 orders_df = lower_column_names(orders_df)
@@ -195,7 +195,7 @@ display(orders_df)
 string_columns = ['opportunityid', 'customerid','state','salesrep','phase']
 numeric_columns = ["amount"]
 
-opportunities_df = read_bronze_data("bronze_opportunities")
+opportunities_df = read_bronze_data("opportunities")
 display(opportunities_df.columns)
 opportunities_df = latest_ingestion_ts(opportunities_df)
 opportunities_df = deduplication(opportunities_df,"opportunityid")
@@ -389,7 +389,8 @@ display(opportunities_df)
 # COMMAND ----------
 
 def create_table_silver(df,format,mode,table_name):
-    df.write.format(format).mode(mode).option("mergeSchema", "true").saveAsTable(f"salesdata.australia_sales_and_opportunities.{table_name}")
+    df.write.format(format).mode(mode).option("mergeSchema", "true")\
+    .saveAsTable(f"salesdata.silver.{table_name}")
 
 def validate_tables(database: str, tables: list[str]):
     for table in tables:
@@ -403,21 +404,21 @@ def validate_tables(database: str, tables: list[str]):
 
 # DBTITLE 1,Load To Gold
 # Customer Load
-create_table_silver(customer_df,"delta","overwrite","silver_customers")
+create_table_silver(customer_df,"delta","overwrite","customers")
 # Orders Load
-create_table_silver(orders_df,"delta","overwrite","silver_orders")
+create_table_silver(orders_df,"delta","overwrite","orders")
 # Opportunities Load
-create_table_silver(opportunities_df,"delta","overwrite","silver_opportunities")
+create_table_silver(opportunities_df,"delta","overwrite","opportunities")
 
 
 # COMMAND ----------
 
 # DBTITLE 1,Loaded Successfully
 tables = [
-    "silver_customers",
-    "silver_orders",
-    "silver_opportunities"
+    "customers",
+    "orders",
+    "opportunities"
 ]
 
-validate_tables("salesdata.australia_sales_and_opportunities",tables)
+validate_tables("salesdata.silver",tables)
     
