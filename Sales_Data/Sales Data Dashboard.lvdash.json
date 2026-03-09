@@ -1,0 +1,571 @@
+{
+  "datasets": [
+    {
+      "name": "a7ea8cb3",
+      "displayName": "dim_customer",
+      "queryLines": [
+        "SELECT COUNT(customer_id) AS Customers FROM salesdata.gold.dim_customer"
+      ],
+      "catalog": "salesdata",
+      "schema": "gold"
+    },
+    {
+      "name": "1c5d5eb7",
+      "displayName": "dim_date",
+      "queryLines": [
+        "SELECT * FROM salesdata.gold.dim_date"
+      ]
+    },
+    {
+      "name": "518644c8",
+      "displayName": "dim_phase",
+      "queryLines": [
+        "SELECT * FROM salesdata.gold.dim_phase"
+      ]
+    },
+    {
+      "name": "55e3d335",
+      "displayName": "dim_product",
+      "queryLines": [
+        "SELECT * FROM salesdata.gold.dim_product"
+      ]
+    },
+    {
+      "name": "90ef0ad6",
+      "displayName": "dim_sales_rep",
+      "queryLines": [
+        "SELECT * FROM salesdata.gold.dim_sales_rep"
+      ]
+    },
+    {
+      "name": "c07905f9",
+      "displayName": "Sales Trend by Month",
+      "queryLines": [
+        "SELECT\n",
+        "  d.month_name,\n",
+        "  SUM(o.order_amt) AS total_sales\n",
+        "FROM\n",
+        "  salesdata.gold.orders_fact o\n",
+        "    JOIN salesdata.gold.dim_date d\n",
+        "      ON o.date_key = d.date_key\n",
+        "GROUP BY\n",
+        "  d.month_name\n",
+        "ORDER BY\n",
+        "  d.month_name"
+      ],
+      "catalog": "salesdata",
+      "schema": "gold"
+    },
+    {
+      "name": "b5bbfc07",
+      "displayName": "orders_fact",
+      "queryLines": [
+        "SELECT * FROM salesdata.gold.orders_fact\r\n",
+        "\r\n"
+      ]
+    },
+    {
+      "name": "c46d09ab",
+      "displayName": "Order Amount by State",
+      "queryLines": [
+        "SELECT\r\n",
+        "  c.state,\r\n",
+        "  SUM(o.order_amt) AS total_revenue\r\n",
+        "FROM\r\n",
+        "  salesdata.gold.orders_fact o\r\n",
+        "    JOIN salesdata.gold.dim_customer c\r\n",
+        "      ON o.customer_id = c.customer_id\r\n",
+        "GROUP BY\r\n",
+        "  c.state;"
+      ],
+      "catalog": "salesdata",
+      "schema": "gold"
+    },
+    {
+      "name": "998f46f5",
+      "displayName": "Sales Rep Performance",
+      "queryLines": [
+        "\r\n",
+        "\r\n",
+        "SELECT s.salesrep,SUM(o.order_amt) AS TopSales FROM orders_fact o \r\n",
+        "JOIN dim_sales_rep s on o.sales_rep_key = s.sales_rep_key\r\n",
+        "GROUP BY s.salesrep"
+      ],
+      "catalog": "salesdata",
+      "schema": "gold"
+    },
+    {
+      "name": "27a8f12a",
+      "displayName": "Sales Pipeline Funnel",
+      "queryLines": [
+        "\r\n",
+        "SELECT status,COUNT(opportunity_id) as opps FROM opportunities_fact GROUP BY status"
+      ],
+      "catalog": "salesdata",
+      "schema": "gold"
+    },
+    {
+      "name": "55b395fb",
+      "displayName": "Top Customers",
+      "queryLines": [
+        "select c.customer_name,ROUND(SUM(o.order_amt),2) as Top_Customer from orders_fact o JOIN\r\n",
+        "dim_customer c on c.customer_id = o.customer_id GROUP BY c.customer_name \r\n",
+        "ORDER BY SUM(o.order_amt) DESC LIMIT 5"
+      ],
+      "catalog": "salesdata",
+      "schema": "gold"
+    },
+    {
+      "name": "f5bf305f",
+      "displayName": "Executive KPI Cards",
+      "queryLines": [
+        "SELECT\r\n",
+        "(SELECT ROUND(SUM(order_amt),2) FROM orders_fact) AS Total_Revenue,\r\n",
+        "\r\n",
+        "(SELECT COUNT(order_id) FROM orders_fact) AS Total_Orders,\r\n",
+        "\r\n",
+        "(SELECT ROUND(AVG(order_amt),2) FROM orders_fact) AS Average_Deal_Size,\r\n",
+        "\r\n",
+        "(SELECT SUM(amount) FROM opportunities_fact) AS Pipeline_Value;"
+      ],
+      "catalog": "salesdata",
+      "schema": "gold"
+    }
+  ],
+  "pages": [
+    {
+      "name": "c9ec4448",
+      "displayName": "SALES CHART",
+      "layout": [
+        {
+          "widget": {
+            "name": "total-revenue-by-state",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "c46d09ab",
+                  "fields": [
+                    {
+                      "name": "state",
+                      "expression": "`state`"
+                    },
+                    {
+                      "name": "sum(total_revenue)",
+                      "expression": "SUM(`total_revenue`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "title": "Total Revenue by State",
+                "showTitle": true
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "state",
+                  "displayName": "State",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "natural-order"
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(total_revenue)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    },
+                    "abbreviation": "compact"
+                  },
+                  "displayName": "Total Revenue",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "state",
+                  "legend": {
+                    "position": "right"
+                  },
+                  "displayName": "State",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "sales-rep-performance",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "998f46f5",
+                  "fields": [
+                    {
+                      "name": "salesrep",
+                      "expression": "`salesrep`"
+                    },
+                    {
+                      "name": "TopSales",
+                      "expression": "`TopSales`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "frame": {
+                "title": "Sales Rep Performance",
+                "showTitle": true
+              },
+              "mark": {
+                "colors": [
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 7
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 2
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 4
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 5
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 6
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 7
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 8
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 9
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  }
+                ]
+              },
+              "widgetType": "combo",
+              "encodings": {
+                "x": {
+                  "fieldName": "salesrep",
+                  "displayName": "Sales Rep",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "color": {
+                  "legend": {
+                    "position": "right"
+                  }
+                },
+                "label": {
+                  "show": true
+                },
+                "y": {
+                  "primary": {
+                    "fields": [
+                      {
+                        "fieldName": "TopSales",
+                        "displayName": "TopSales"
+                      }
+                    ],
+                    "scale": {
+                      "type": "quantitative"
+                    }
+                  },
+                  "secondary": {
+                    "fields": [
+                      {
+                        "fieldName": "TopSales"
+                      }
+                    ],
+                    "scale": {
+                      "type": "quantitative"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 14,
+            "width": 12,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "sales-pipeline-funnel",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "27a8f12a",
+                  "fields": [
+                    {
+                      "name": "sum(opps)",
+                      "expression": "SUM(`opps`)"
+                    },
+                    {
+                      "name": "status",
+                      "expression": "`status`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "title": "Sales Pipeline Funnel"
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(opps)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "status",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 2,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "top-five-customers",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "55b395fb",
+                  "fields": [
+                    {
+                      "name": "customer_name",
+                      "expression": "`customer_name`"
+                    },
+                    {
+                      "name": "sum(Top_Customer)",
+                      "expression": "SUM(`Top_Customer`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "annotations": [
+                {
+                  "type": "horizontal-line",
+                  "encodings": {
+                    "y": {
+                      "dataValue": "49000000",
+                      "dataType": "DOUBLE"
+                    }
+                  }
+                }
+              ],
+              "frame": {
+                "showTitle": true,
+                "title": "Top Five Customers"
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "customer_name",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(Top_Customer)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "customer_name",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 12,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "4e52e11b",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "f5bf305f",
+                  "fields": [
+                    {
+                      "name": "Average_Deal_Size",
+                      "expression": "`Average_Deal_Size`"
+                    },
+                    {
+                      "name": "Pipeline_Value",
+                      "expression": "`Pipeline_Value`"
+                    },
+                    {
+                      "name": "Total_Orders",
+                      "expression": "`Total_Orders`"
+                    },
+                    {
+                      "name": "Total_Revenue",
+                      "expression": "`Total_Revenue`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "Average_Deal_Size"
+                  },
+                  {
+                    "fieldName": "Pipeline_Value"
+                  },
+                  {
+                    "fieldName": "Total_Orders"
+                  },
+                  {
+                    "fieldName": "Total_Revenue"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": false
+              },
+              "rowsPerPage": 25,
+              "displayRowNumbers": false
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "6b6f29b7",
+      "displayName": "Global Filters",
+      "layout": [
+        {
+          "widget": {
+            "name": "3d5397af",
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true
+              },
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": []
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS",
+      "layoutVersion": "GRID_V1"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    },
+    "applyModeEnabled": false
+  }
+}
