@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "4"
+# ///
 # MAGIC %md
 # MAGIC # Gold Layer – Business-Level Analytics
 # MAGIC ### Medallion Architecture – Australian Sales & Opportunities Pipeline
@@ -285,7 +289,10 @@
 # COMMAND ----------
 
 # DBTITLE 1,Dependencies
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col,row_number
+from pyspark.sql.functions import to_date, year, quarter, month,dayofmonth, dayofweek, weekofyear,date_format, when
+from pyspark.sql.window import Window
+
 
 # COMMAND ----------
 
@@ -297,26 +304,151 @@ def read_sliver_data(table_name):
 
 # COMMAND ----------
 
+def filter_data(df,columns):
+    for column in columns:
+        df = df.filter(col(column) == False)
+    return df
+
+def select_with_alias(df, columns: dict):
+    return df.select([col(k).alias(v) for k, v in columns.items()])
+
+def dim_table(df,filter_columns,selected_columns):
+    df = filter_data(df,filter_columns)
+    df = select_with_alias(df,selected_columns)
+    df = df.dropDuplicates()
+    return df
+
+def fact_table(df,filter_columns,selected_columns):
+    df = filter_data(df,filter_columns)
+    df = select_with_alias(df,selected_columns)
+
+    return df
+    
+def enrich_date(df, column):
+
+    df = df.withColumn(column, to_date(col(column), "yyyy-MM-dd"))
+
+    df = (
+        df
+        .withColumn("year", year(col(column)))
+        .withColumn("quarter", quarter(col(column)))
+        .withColumn("month", month(col(column)))
+        .withColumn("month_name", date_format(col(column), "MMMM"))
+        .withColumn("week_of_year", weekofyear(col(column)))
+        .withColumn("day_of_month", dayofmonth(col(column)))
+        .withColumn("day_of_week", dayofweek(col(column)))
+        .withColumn("day_name", date_format(col(column), "EEEE"))
+        .withColumn(
+            "is_weekend",
+            when(dayofweek(col(column)).isin(1,7), True).otherwise(False)
+        )
+    )
+
+    return df
+
+# COMMAND ----------
+
 silver_customers_df = read_sliver_data("silver_customers")
-
-dim_customer = (
-    silver_customers_df
-    .filter(
-        (col("customerid_is_null") == False) &
-        (col("is_duplicate") == False) &
-        (col("customername_is_null") == False)
-    )
-    .select(
-        col("customerid").alias("customer_id"),
-        col("customername").alias("customer_name"),
-        "city",
-        "state"
-    )
-)
-display(dim_customer)
-
-
 silver_orders_df = read_sliver_data("silver_orders")
 display(silver_orders_df)
-sliver_opportunities_df = read_sliver_data("silver_opportunities")
-display(sliver_opportunities_df)
+silver_opportunities_df = read_sliver_data("silver_opportunities")
+display(silver_opportunities_df)
+
+
+# COMMAND ----------
+
+def create_fact_key(name,key_name, final_column, *df_columns):
+
+    df_union = df_columns[0][0].selectExpr(f"{df_columns[0][1]} as {final_column}")
+
+    for df, col in df_columns[1:]:
+        df_union = df_union.union(df.selectExpr(f"{col} as {final_column}"))
+
+    df_union = df_union.distinct()
+
+    df_key = add_key(df_union, key_name, final_column,name)
+
+    return df_key
+
+
+def add_key(df, key_name, select_column,name):
+
+    if name == 'date':
+        df = df.withColumn(key_name,date_format(col(select_column), "yyyyMMdd").cast("int"))
+        df = enrich_date(df,select_column)
+    
+    else: 
+        window = Window.orderBy(select_column)
+
+        df = df.withColumn(
+            key_name,
+            row_number().over(window)
+        ).select(key_name, select_column)
+
+    return df
+
+def join_key_fact_table(df_main,df_second,key_name,how="left"):
+    df = df_main.join(
+        df_second,
+        on=key_name,
+        how=how
+    )
+    return df
+
+# COMMAND ----------
+
+vaild_customers_id = ["customerid_is_null","is_duplicate","customername_is_null"]
+select_customers = {"customerid":"customer_id","customername":"customer_name","city":"city","state":"state"}
+dim_customer = dim_table(silver_customers_df,vaild_customers_id,select_customers)
+
+vaild_sales_rep_id = ["invalid_salesrep"]
+select_sales_rep = {"salesrep":"sales_rep"}
+dim_sales_rep = create_fact_key(None,"sales_rep_key","salesrep",
+                                (silver_orders_df,"salesrep"),
+                                (silver_opportunities_df,"salesrep"))
+display(dim_sales_rep)
+
+dim_product = dim_table(silver_orders_df,["productid_is_null"],{"productid":"product_id"})
+display(dim_product)
+
+date_key = create_fact_key('date','date_key','date',
+                           (silver_orders_df,"orderdate"),
+                           (silver_opportunities_df,"date"))
+display(date_key)
+
+phase_dim = dim_table(silver_opportunities_df,["opportunityid_is_null"],{"phase":"phase","status_clean":"status"})
+display(phase_dim)
+
+
+# COMMAND ----------
+
+valid_orders_id = ['orderid_is_null','is_orphan']
+select_order_columns = {
+    "customerid":"customer_id",
+    "orderid":"order_id",
+    "productid":"product_id",
+    "date_key":"date_key",
+    "quantity":"quantity",
+    "orderamt":"order_amt",
+    "salesrep":"sales_rep",
+    "sales_rep_key":"sales_rep_key"}
+orders_fact_key = join_key_fact_table(silver_orders_df,dim_sales_rep,"salesrep")
+# display(orders_fact_key)
+orders_fact = fact_table(orders_fact_key,valid_orders_id,select_order_columns)
+display(orders_fact)
+vaild_opportunityid_is_null = ["opportunityid_is_null","is_orphan"]
+select_opportunity_columns = {
+    "customerid":"customer_id",
+    "opportunityid":"opportunity_id",
+    "state":"state",
+    "date":"date",
+    "amount":"amount",
+    "phase":"phase",
+    "status_clean":"status",
+    "sales_rep_key":"sales_rep_key",
+    "date_key":"date_key"}
+opportunities_fact_key = join_key_fact_table(silver_opportunities_df,dim_sales_rep,"salesrep")
+# display(opportunities_fact_key)
+opportunities_fact = fact_table(opportunities_fact_key,vaild_opportunityid_is_null,select_opportunity_columns)
+display(opportunities_fact)
+

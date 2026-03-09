@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "4"
+# ///
 # MAGIC %md
 # MAGIC # Silver Layer – Cleansed & Conformed Data
 # MAGIC *Medallion Architecture – Australian Sales & Opportunities Pipeline*
@@ -91,7 +95,7 @@
 
 # DBTITLE 1,Dependencies
 from pyspark.sql.functions import col, upper, trim,lower
-from pyspark.sql.functions import to_date,year, month,dayofweek
+from pyspark.sql.functions import to_date,year, month,dayofweek,date_format
 from pyspark.sql.functions import regexp_replace, when, max as spark_max,row_number, desc,array_remove,array,size,lit
 from pyspark.sql.window import Window
 
@@ -350,9 +354,8 @@ display(opportunities_df)
 # DBTITLE 1,Enrichment Methods
 def enrich_date(df,column):
     df = df.withColumn(column, to_date(col(column), 'yyyy-MM-dd'))
-    df = df.withColumn("year", year(col(column)))\
-        .withColumn("month",month(column))\
-        .withColumn("dayofweek",dayofweek(column))
+    df = df.withColumn("date_key",date_format(column,"yyyyMMdd"))
+        
     return df
 
 # COMMAND ----------
@@ -385,18 +388,36 @@ display(opportunities_df)
 
 # COMMAND ----------
 
+def create_table_silver(df,format,mode,table_name):
+    df.write.format(format).mode(mode).option("mergeSchema", "true").saveAsTable(f"salesdata.australia_sales_and_opportunities.{table_name}")
+
+def validate_tables(database: str, tables: list[str]):
+    for table in tables:
+        try:
+            df = spark.table(f"{database}.{table}")
+            print(f"✅ {table}: {df.count()} rows")
+        except Exception:
+            print(f"❌ {table}: table not found")
+
+# COMMAND ----------
+
 # DBTITLE 1,Load To Gold
 # Customer Load
-customer_df.write.format("delta").mode("overwrite").saveAsTable("salesdata.australia_sales_and_opportunities.silver_customers")
+create_table_silver(customer_df,"delta","overwrite","silver_customers")
 # Orders Load
-orders_df.write.format("delta").mode("overwrite").saveAsTable("salesdata.australia_sales_and_opportunities.silver_orders")
+create_table_silver(orders_df,"delta","overwrite","silver_orders")
 # Opportunities Load
-opportunities_df.write.format("delta").mode("overwrite").saveAsTable("salesdata.australia_sales_and_opportunities.silver_opportunities")
+create_table_silver(opportunities_df,"delta","overwrite","silver_opportunities")
+
 
 # COMMAND ----------
 
 # DBTITLE 1,Loaded Successfully
-for table in ["silver_customers","silver_orders","silver_opportunities"]:
-    df = spark.table(f"salesdata.australia_sales_and_opportunities.{table}")
-    print(f"{table} rows:", df.count())
+tables = [
+    "silver_customers",
+    "silver_orders",
+    "silver_opportunities"
+]
+
+validate_tables("salesdata.australia_sales_and_opportunities",tables)
     
