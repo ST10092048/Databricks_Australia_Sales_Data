@@ -298,7 +298,7 @@ from pyspark.sql.window import Window
 
 # DBTITLE 1,Ingestion Methods
 def read_sliver_data(table_name):
-    df = spark.table(f"salesdata.australia_sales_and_opportunities.{table_name}")
+    df = spark.table(f"salesdata.silver.{table_name}")
     return df
 
 
@@ -348,10 +348,10 @@ def enrich_date(df, column):
 
 # COMMAND ----------
 
-silver_customers_df = read_sliver_data("silver_customers")
-silver_orders_df = read_sliver_data("silver_orders")
+silver_customers_df = read_sliver_data("customers")
+silver_orders_df = read_sliver_data("orders")
 display(silver_orders_df)
-silver_opportunities_df = read_sliver_data("silver_opportunities")
+silver_opportunities_df = read_sliver_data("opportunities")
 display(silver_opportunities_df)
 
 
@@ -430,7 +430,6 @@ select_order_columns = {
     "date_key":"date_key",
     "quantity":"quantity",
     "orderamt":"order_amt",
-    "salesrep":"sales_rep",
     "sales_rep_key":"sales_rep_key"}
 orders_fact_key = join_key_fact_table(silver_orders_df,dim_sales_rep,"salesrep")
 # display(orders_fact_key)
@@ -458,7 +457,7 @@ display(opportunities_fact)
 
 def create_table_gold(df,format,mode,table_name):
     df.write.format(format).mode(mode).option("mergeSchema", "true")\
-    .saveAsTable(f"salesdata.australia_sales_and_opportunities.{table_name}")
+    .saveAsTable(f"salesdata.gold.{table_name}")
 
 # COMMAND ----------
 
